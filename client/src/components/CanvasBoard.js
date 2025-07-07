@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import socket from "../socket";
+import "../canvas-cursors.css"; // Make sure this exists
 
-const CanvasBoard = ({ roomId, color, brushSize }) => {
+const CanvasBoard = ({ roomId, color, brushSize, tool }) => {
   const canvasRef = useRef(null);
   const ctxRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -15,50 +16,81 @@ const CanvasBoard = ({ roomId, color, brushSize }) => {
 
     const ctx = canvas.getContext("2d");
     ctx.lineCap = "round";
-    ctx.strokeStyle = color;
-    ctx.lineWidth = brushSize;
     ctxRef.current = ctx;
 
     socket.emit("join-room", roomId);
 
     socket.on("draw", (data) => {
-      drawStroke(data, false); 
+      drawStroke(data, false);
     });
 
     socket.on("clear", () => {
       clearCanvas();
     });
 
+    // Listen to undo and clear events from parent
+    const undoListener = () => handleUndo();
+    const clearListener = () => handleClear();
+
+    window.addEventListener("canvas-undo", undoListener);
+    window.addEventListener("canvas-clear", clearListener);
+
     return () => {
       socket.off("draw");
       socket.off("clear");
+      window.removeEventListener("canvas-undo", undoListener);
+      window.removeEventListener("canvas-clear", clearListener);
     };
   }, [roomId]);
 
-  
   useEffect(() => {
     if (ctxRef.current) {
-      ctxRef.current.strokeStyle = color;
-      ctxRef.current.lineWidth = brushSize;
+      applyToolSettings();
     }
-  }, [color, brushSize]);
+  }, [color, brushSize, tool]);
 
-  const drawStroke = ({ x, y, prevX, prevY, color, brushSize }, save = true) => {
+  const applyToolSettings = () => {
+    const ctx = ctxRef.current;
+    switch (tool) {
+      case "pen":
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = 1;
+        break;
+      case "brush":
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 8;
+        ctx.globalAlpha = 0.8;
+        break;
+      case "marker":
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 6;
+        ctx.globalAlpha = 0.4;
+        break;
+      case "eraser":
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 10;
+        ctx.globalAlpha = 1;
+        break;
+      default:
+        ctx.strokeStyle = color;
+        ctx.lineWidth = brushSize;
+        ctx.globalAlpha = 1;
+    }
+  };
+
+  const drawStroke = ({ x, y, prevX, prevY, color, brushSize, tool }, save = true) => {
     const ctx = ctxRef.current;
     if (!ctx) return;
 
-    ctx.strokeStyle = color;
-    ctx.lineWidth = brushSize;
+    applyToolSettings();
     ctx.beginPath();
     ctx.moveTo(prevX, prevY);
     ctx.lineTo(x, y);
     ctx.stroke();
 
     if (save) {
-      setStrokes((prev) => [
-        ...prev,
-        { x, y, prevX, prevY, color, brushSize },
-      ]);
+      setStrokes((prev) => [...prev, { x, y, prevX, prevY, color, brushSize, tool }]);
     }
   };
 
@@ -77,8 +109,18 @@ const CanvasBoard = ({ roomId, color, brushSize }) => {
     const prevX = ctxRef.current.prevX;
     const prevY = ctxRef.current.prevY;
 
-    drawStroke({ x: offsetX, y: offsetY, prevX, prevY, color, brushSize });
-    socket.emit("draw", { roomId, x: offsetX, y: offsetY, prevX, prevY, color, brushSize });
+    drawStroke({ x: offsetX, y: offsetY, prevX, prevY, color, brushSize, tool }, true);
+
+    socket.emit("draw", {
+      roomId,
+      x: offsetX,
+      y: offsetY,
+      prevX,
+      prevY,
+      color,
+      brushSize,
+      tool,
+    });
 
     ctxRef.current.prevX = offsetX;
     ctxRef.current.prevY = offsetY;
@@ -111,27 +153,25 @@ const CanvasBoard = ({ roomId, color, brushSize }) => {
     });
   };
 
-  const downloadImage = () => {
-    const canvas = canvasRef.current;
-    const image = canvas.toDataURL("image/png");
-    const link = document.createElement("a");
-    link.href = image;
-    link.download = `whiteboard-${roomId}.png`;
-    link.click();
+  const getCursorClass = () => {
+    switch (tool) {
+      case "pen":
+        return "cursor-pen";
+      case "brush":
+        return "cursor-brush";
+      case "marker":
+        return "cursor-marker";
+      case "eraser":
+        return "cursor-eraser";
+      default:
+        return "";
+    }
   };
 
   return (
-    <div style={{ textAlign: "center" }}>
-      <div style={{ marginBottom: "10px" }}>
-        <button onClick={handleClear}>🧹 Clear</button>
-        <button onClick={handleUndo} style={{ marginLeft: "10px" }}>
-          ↩️ Undo
-        </button>
-        <button onClick={downloadImage} style={{ marginLeft: "10px" }}>
-          💾 Save Whiteboard
-        </button>
-      </div>
+    <div>
       <canvas
+        className={getCursorClass()}
         ref={canvasRef}
         onMouseDown={startDraw}
         onMouseMove={draw}
